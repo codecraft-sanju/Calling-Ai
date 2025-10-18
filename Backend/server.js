@@ -1,28 +1,33 @@
 // ===================================================
-// 🚀 Exotel ↔ OpenAI GPT-5 Realtime Voice Bridge (FINAL)
+// 🚀 Exotel ↔ OpenAI GPT-5 Realtime Voice Bridge (DEBUG SAFE)
 // ===================================================
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import fetch from "node-fetch";
+import bodyParser from "body-parser";
 import WebSocket, { WebSocketServer } from "ws";
 
 dotenv.config();
 const app = express();
 
 // ===================================================
-// 🧠 Global CORS + OPTIONS + Body Parsers
+// 🧠 Global Middleware Setup (CORS + Parsers)
 // ===================================================
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", process.env.FRONTEND_URL || "http://localhost:5173");
+  res.header(
+    "Access-Control-Allow-Origin",
+    process.env.FRONTEND_URL || "http://localhost:5173"
+  );
   res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// 🧩 use BOTH body parsers for safety
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
 app.use(cors());
 
 const log = (...m) => console.log(`[${new Date().toISOString()}]`, ...m);
@@ -45,10 +50,12 @@ app.get("/health", (req, res) => {
 // ===================================================
 app.post("/api/call", async (req, res) => {
   try {
-    const target = TARGET_NUMBERS[Math.floor(Math.random() * TARGET_NUMBERS.length)];
+    const target =
+      TARGET_NUMBERS[Math.floor(Math.random() * TARGET_NUMBERS.length)];
     log("🎯 Target selected:", target);
 
     const exoURL = `https://api.exotel.in/v1/Accounts/${process.env.EXOTEL_SID}/Calls/connect.json`;
+
     const body = new URLSearchParams({
       From: process.env.AGENT_NUMBER,
       To: target,
@@ -93,17 +100,22 @@ app.post("/api/call", async (req, res) => {
 // 2️⃣ Exotel callback → AI Session XML (GET or POST)
 // ===================================================
 app.all("/ai-voice-start", (req, res) => {
+  log("📞 Callback hit from Exotel — body:", req.body, "query:", req.query);
+
   const callSid =
-    req.body?.CallSid || req.query?.CallSid || "unknown";
-  log("🎤 Exotel hit /ai-voice-start", callSid);
+    req.body?.CallSid ||
+    req.query?.CallSid ||
+    req.body?.CallSidXml ||
+    "unknown";
+
+  log("🎤 Exotel hit /ai-voice-start → CallSid:", callSid);
 
   const host = process.env.SERVER_URL.replace("https://", "").replace("http://", "");
+
   const exotelXML = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial record="true" action="${process.env.SERVER_URL}/call-status-callback">
-    <User>
-      wss://${host}/ws/ai?CallSid=${callSid}
-    </User>
+    <User>wss://${host}/ws/ai?CallSid=${callSid}</User>
   </Dial>
 </Response>`;
 
@@ -152,37 +164,36 @@ wss.on("connection", async (ws, req) => {
   aiSocket.on("open", () => {
     log("🤝 Connected to GPT-5 Realtime Voice API");
 
-    // 🧠 Session setup
     const setupMsg = {
       type: "session.update",
       session: {
-        voice: "verse", // expressive voice (try "nova", "alloy", etc.)
+        voice: "verse",
         input_audio_format: "wav",
         output_audio_format: "wav",
         turn_detection: { type: "server_vad" },
         instructions:
-          "You are a confident, friendly AI sales agent for website and app development. Speak naturally in Hindi + English mix (Hinglish), sound human and casual like a pro telecaller. Start warm with greetings and sound confident.",
+          "You are a confident, friendly AI sales agent for website and app development. Speak in natural Hinglish — mix Hindi + English like a human telecaller. Start with a warm greeting and talk casually but smartly.",
       },
     };
     aiSocket.send(JSON.stringify(setupMsg));
 
-    // 👋 instant greet
-    aiSocket.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          instructions:
-            "Namaste! 🙌 Main Sanjay ki AI assistant bol rahi hu. Aapki website ya app ke baare me thoda discuss kar sakte hain?",
-        },
-      })
-    );
+    // instant greet if silent
+    setTimeout(() => {
+      aiSocket.send(
+        JSON.stringify({
+          type: "response.create",
+          response: {
+            instructions:
+              "Namaste 🙌 main Sanjay ki AI assistant bol rahi hu. Kya aap website ya app development ke baare me baat karna chahenge?",
+          },
+        })
+      );
+    }, 3000);
   });
 
-  // 🔄 Bridge audio both ways
   ws.on("message", (data) => aiSocket.send(data));
   aiSocket.on("message", (msg) => ws.send(msg));
 
-  // 🧹 Cleanup
   ws.on("close", () => {
     log(`🔇 Exotel WS closed: ${callSid}`);
     aiSocket.close();
